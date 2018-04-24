@@ -1,0 +1,170 @@
+- name: provisioning
+  hosts: all
+  become: yes
+  user: vagrant
+  vars:
+    # 基本
+    base_locale: LANG=ja_JP.UTF-8
+    base_timezone: Asia/Tokyo
+    # PostgreSQL
+    dbuser: "postgres"
+    dbpass: "postgres"
+    dbname: "sample"
+    # Rails
+    work_dir: /usr/local/share
+    repos_dir: "{{ work_dir }}/rbenv"
+    branch: master
+    ruby_version: 2.5.1
+  
+  tasks:
+    # 基本 ###################################
+    - name: yum update
+      yum: 
+        name=*
+        state=latest
+
+    - name: SELinux無効
+      selinux: state=disabled
+
+    - name: locale設定
+      command: localectl set-locale {{ base_locale }}
+     
+    - name: timezone設定
+      command: timedatectl set-timezone {{ base_timezone }}
+
+    - name: ntpインストール
+      yum: name=ntp state=latest
+
+    - name: ntp設定
+      command: ntpdate ntp.nict.jp
+
+    - name: firewalld停止
+      command: systemctl stop firewalld
+      become_user: root
+      become: yes
+
+    - name: firewalld無効
+      command: systemctl mask firewalld
+      become_user: root
+      become: yes
+
+    # PostgreSQL ###################################
+    - name: PostgreSQLインストール
+      yum: name={{ item }} state=latest
+      with_items:
+        - postgresql-server
+        - postgresql-devel
+        - postgresql-contrib
+        - python-psycopg2
+
+    - name: PostgreSQL初期化
+      shell: service postgresql initdb
+
+    - name: pg_hba.conf Windowsから接続設定
+      copy: 
+        dest: /var/lib/pgsql/data/pg_hba.conf
+        content: "local all all peer\nhost all all 127.0.0.1/32 md5\nhost all all ::1/128 md5\nhost all all all trust"
+
+    - name: postgresql.conf Windowsから接続設定
+      lineinfile: dest=/var/lib/pgsql/data/postgresql.conf
+        regexp="^#listen_addresses"
+        line="listen_addresses = '*'"
+        state=present
+        backup=yes
+
+    - name: PostgreSQL起動
+      service: name=postgresql state=started  enabled=yes
+
+    - name: PostgreSQL sudores設定
+      lineinfile: 
+        dest: /etc/sudoers.d/postgres 
+        owner: root
+        group: root
+        mode: 0440
+        line: "%vagrant ALL=(postgres) NOPASSWD: ALL"
+        state: present
+        create: yes
+        validate: "visudo -cf %s"
+
+    - name: DBユーザ作成
+      user: name={{ dbuser }} password={{ dbpass }}
+
+    - name: PostgreSQLユーザ作成
+      postgresql_user: 
+        name: "{{ dbuser }}"
+        password: "{{ dbpass }}"
+        state: present
+        login_user: postgres
+        role_attr_flags: CREATEDB,LOGIN
+      become_user: postgres
+      become: yes
+
+    - name : 開発用データベース作成
+      postgresql_db: 
+        name: "{{ dbname }}_development"
+        lc_collate: "ja_JP.UTF-8"
+        lc_ctype: "ja_JP.UTF-8"
+        template: "template0"
+        encoding: "UTF-8"
+        login_user: postgres
+      become_user: postgres
+      become: yes
+
+    - name : テスト用データベース作成
+      postgresql_db: 
+        name: "{{ dbname }}_test"
+        lc_collate: "ja_JP.UTF-8"
+        lc_ctype: "ja_JP.UTF-8"
+        template: "template0"
+        encoding: "UTF-8"
+        login_user: postgres
+      become_user: postgres
+      become: yes
+
+    - name : 本番用データベース作成
+      postgresql_db: 
+        name: "{{ dbname }}_production"
+        lc_collate: "ja_JP.UTF-8"
+        lc_ctype: "ja_JP.UTF-8"
+        template: "template0"
+        encoding: "UTF-8"
+        login_user: postgres
+      become_user: postgres
+      become: yes
+
+    # Rails ###################################
+    - name: Gitインストール
+      yum: name=git state=installed
+
+    - name: rbenvインストール
+      git: repo=https://github.com/sstephenson/rbenv.git dest={{ repos_dir }} version={{ branch }} accept_hostkey=yes
+
+    - name: RBENV_ROOTパス追加
+      lineinfile: >
+        dest=/etc/profile.d/rbenv.sh
+        line='export RBENV_ROOT="{{ repos_dir }}"'
+        create=yes
+
+    - name: rubyパス追加
+      lineinfile: >
+        dest=/etc/profile.d/rbenv.sh
+        line='export PATH="{{ repos_dir }}/bin:$PATH"'
+        create=yes
+
+    - name: rbenv init登録
+      lineinfile: >
+        dest=/etc/profile.d/rbenv.sh
+        line='if which rbenv > /dev/null; then eval "$(rbenv init -)"; fi' 
+        create=yes
+
+    - name: ruby-buildインストール
+      git: repo=https://github.com/sstephenson/ruby-build.git dest={{ repos_dir }}/plugins/ruby-build version={{ branch }} accept_hostkey=yes
+
+    - name: Rubyインストール
+      shell: /bin/bash -lc "rbenv install {{ ruby_version }} && rbenv rehash && rbenv global {{ ruby_version }}"
+
+    - name: bundlerインストール
+      shell: /bin/bash -lc "gem install bundler"
+
+    - name: Railsインストール
+      shell: /bin/bash -lc "gem install rails"
