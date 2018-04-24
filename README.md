@@ -1,0 +1,1 @@
+# skeleton.vagrant_rails
